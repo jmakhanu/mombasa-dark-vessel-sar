@@ -1,0 +1,11 @@
+*.tiff
+*.tif
+*.zip
+*.SAFE/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.key
+.vscode/
