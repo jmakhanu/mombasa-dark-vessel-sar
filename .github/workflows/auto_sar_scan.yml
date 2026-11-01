@@ -1,0 +1,43 @@
+name: Autonomous Sentinel-1 Mombasa SAR Scan
+
+on:
+  schedule:
+    # Runs automatically every 48 hours at 04:00 UTC (07:00 EAT) to catch new orbital passes
+    - cron: '0 4 */2 * *'
+  workflow_dispatch: # Allows 1-click manual trigger from the GitHub Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  sar-mda-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Geospatial & SAR Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Stream Latest Sentinel-1 VH Pass from Copernicus CDSE
+        env:
+          CDSE_EMAIL: ${{ secrets.CDSE_EMAIL }}
+          CDSE_PASSWORD: ${{ secrets.CDSE_PASSWORD }}
+        run: python download_sar.py
+
+      - name: Run Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML Pipeline
+        run: python train_and_upgrade.py
+
+      - name: Commit & Deploy Updated Intelligence Brief & Live Map
+        run: |
+          git config user.name "Mombasa SAR Autonomous Bot"
+          git config user.email "actions@github.com"
+          git add index.html mombasa_detections.html sar_detections.csv intel_brief.md dataset/sar_ml_weights.json
+          git diff --staged --quiet || git commit -m "Auto-update: Latest Sentinel-1 Mombasa SAR pass & telemetry"
+          git push
