@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import json
 import zlib
@@ -16,7 +17,9 @@ TIFF_FILE = "mombasa_sar_vh.tiff"
 CSV_FILE = "sar_detections.csv"
 DATASET_CSV = "dataset/metadata.csv"
 MODEL_FILE = "dataset/sar_ml_weights.json"
+HISTORY_FILE = "sar_history.json"
 BRIEF_FILE = "intel_brief.md"
+PASS_META_FILE = "latest_pass_meta.txt"
 
 MIN_LON, MAX_LON = 39.61, 39.95
 MIN_LAT, MAX_LAT = -4.22, -3.96
@@ -36,12 +39,21 @@ def haversine_m(lat1, lon1, lat2, lon2):
     a = np.sin(dp / 2)**2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2)**2
     return float(2 * R * np.arcsin(np.sqrt(a)))
 
+def get_pass_metadata():
+    """Parses the exact Sentinel-1 mission and UTC acquisition timestamp from latest_pass_meta.txt."""
+    if os.path.exists(PASS_META_FILE):
+        raw_name = open(PASS_META_FILE).read().strip()
+        m = re.search(r"(S1[A-D])_IW_GRDH_\w+?_(\d{8}T\d{6})", raw_name)
+        if m:
+            sat, dt_str = m.group(1), m.group(2)
+            dt_fmt = f"{dt_str[:4]}-{dt_str[4:6]}-{dt_str[6:8]} {dt_str[9:11]}:{dt_str[11:13]} UTC"
+            return f"{sat} VH ({dt_fmt})", raw_name
+    return "Sentinel-1 IW GRDH VH", "LOCAL_ARCHIVE_PASS"
+
 def extract_chip_features(chip):
-    """Extracts 7 radiometric & spatial morphology features from a 64x64 SAR tensor."""
     c = chip.astype(np.float32)
     h, w = c.shape
     cy, cx = h // 2, w // 2
-    
     core = c[cy-7:cy+8, cx-7:cx+8]
     outer_mask = np.ones_like(c, dtype=bool)
     outer_mask[cy-12:cy+13, cx-12:cx+13] = False
@@ -52,20 +64,12 @@ def extract_chip_features(chip):
     peak_val = float(np.max(core))
     core_mean = float(np.mean(core))
 
-    # 1. Peak-to-Clutter Ratio (dB scale proxy)
     pcr = np.log1p(peak_val / ring_mean)
-    # 2. Core Z-Score SNR
     core_z = (core_mean - ring_mean) / ring_std
-    # 3. Peak Z-Score
     peak_z = (peak_val - ring_mean) / ring_std
-    # 4. Radial Energy Concentration
-    total_energy = max(float(np.sum(c)), 1.0)
-    core_energy_ratio = float(np.sum(core)) / total_energy
-    # 5. High-Sigma Metallic Scatterer Pixel Count
+    core_energy_ratio = float(np.sum(core)) / max(float(np.sum(c)), 1.0)
     metallic_px = float(np.sum(core > (ring_mean + 4.0 * ring_std)))
-    # 6. Spatial Kurtosis (sharpness of hull reflection vs flat waves)
     kurtosis = float(np.mean(((c - ring_mean) / ring_std) ** 4))
-    # 7. Horizontal/Vertical Gradient Structure
     grad_mag = float(np.mean(np.hypot(np.diff(core, axis=0)[:, :-1], np.diff(core, axis=1)[:-1, :]))) / ring_std
 
     return np.array([pcr, core_z, peak_z, core_energy_ratio * 100.0, metallic_px, np.log1p(max(kurtosis, 0.0)), grad_mag], dtype=np.float32)
@@ -82,45 +86,36 @@ def train_stage2_classifier():
             npy_path = os.path.join("dataset", row["npy_path"])
             if os.path.exists(npy_path):
                 chip = np.load(npy_path)
-                feats = extract_chip_features(chip)
-                X_list.append(feats)
+                X_list.append(extract_chip_features(chip))
                 y_list.append(float(row["label"]))
 
     X = np.vstack(X_list)
     y = np.array(y_list)
-
-    # Z-score standardize features
     mu = np.mean(X, axis=0)
     sigma = np.maximum(np.std(X, axis=0), 1e-4)
     Xn = (X - mu) / sigma
 
-    # Train L2-Regularized Logistic Regression via Newton-Raphson / Gradient Descent
     w = np.zeros(Xn.shape[1], dtype=np.float32)
     b = 0.0
-    lr = 0.15
     for _ in range(400):
         z = np.clip(Xn @ w + b, -20.0, 20.0)
         preds = 1.0 / (1.0 + np.exp(-z))
         err = preds - y
-        grad_w = (Xn.T @ err) / len(y) + 0.02 * w
-        grad_b = float(np.mean(err))
-        w -= lr * grad_w
-        b -= lr * grad_b
+        w -= 0.15 * ((Xn.T @ err) / len(y) + 0.02 * w)
+        b -= 0.15 * float(np.mean(err))
 
     final_preds = (1.0 / (1.0 + np.exp(-np.clip(Xn @ w + b, -20.0, 20.0)))) >= 0.5
     acc = float(np.mean(final_preds == (y >= 0.5))) * 100.0
     print(f"      Stage-2 ML Classifier Trained ({len(y)} chips) | Validation Accuracy: {acc:.1f}%")
 
-    model_data = {"mu": mu.tolist(), "sigma": sigma.tolist(), "w": w.tolist(), "b": float(b), "accuracy": acc}
     with open(MODEL_FILE, "w") as f:
-        json.dump(model_data, f, indent=2)
+        json.dump({"mu": mu.tolist(), "sigma": sigma.tolist(), "w": w.tolist(), "b": float(b), "accuracy": acc}, f, indent=2)
     return mu, sigma, w, b
 
 def score_vessel_ml(chip, aspect_ratio, mu, sigma, w, b):
     feats = extract_chip_features(chip)
     xn = (feats - mu) / sigma
     logit = float(np.dot(xn, w) + b)
-    # Boost confidence slightly for clean elongated ship aspect ratios (L/B > 1.8)
     geom_bonus = 0.45 if 1.6 <= aspect_ratio <= 6.5 else -0.25
     prob = 1.0 / (1.0 + np.exp(-np.clip(logit + geom_bonus, -15.0, 15.0)))
     return round(float(np.clip(prob * 100.0, 52.0, 99.8)), 1)
@@ -232,10 +227,41 @@ def compute_vessel_pca(sar_patch, snr, ring_mean, lr, lc, r_min, c_min, transfor
         "kinematic_state": kinematic_state
     }
 
+def update_and_score_persistence(ships, pass_id):
+    """Tracks vessel coordinates across passes in sar_history.json to detect persistent berth occupancy / loitering."""
+    history = {"passes": []}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            history = json.load(open(HISTORY_FILE))
+        except Exception:
+            history = {"passes": []}
+
+    prior_passes = [p for p in history.get("passes", []) if p.get("pass_id") != pass_id]
+
+    for s in ships:
+        matches = 1
+        for p in prior_passes:
+            for old_pt in p.get("contacts", []):
+                if haversine_m(s["lat"], s["lon"], old_pt["lat"], old_pt["lon"]) <= 160.0:
+                    matches += 1
+                    break
+        s["passes_seen"] = matches
+        s["dwell_status"] = f"PERSISTENT ({matches} PASSES)" if matches > 1 else "NEW CONTACT (1 PASS)"
+
+    prior_passes.append({
+        "pass_id": pass_id,
+        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "contacts": [{"id": s["id"], "lat": round(s["lat"], 5), "lon": round(s["lon"], 5), "len": s["len"]} for s in ships]
+    })
+    history["passes"] = prior_passes[-20:]  # Keep trailing 20 orbital passes
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
 def run_full_intelligence_engine():
     mu, sigma, w, b = train_stage2_classifier()
+    pass_label, pass_raw_id = get_pass_metadata()
 
-    print("[2/5] Slicing Mombasa SAR Window & Running Dual-Stage CFAR + PCA + ML...")
+    print(f"[2/5] Slicing Mombasa SAR Window ({pass_label}) & Running CFAR + PCA + ML...")
     with rasterio.open(TIFF_FILE) as src:
         gcps, _ = src.gcps
         transformer = GCPTransformer(gcps)
@@ -293,7 +319,9 @@ def run_full_intelligence_engine():
                 "zone": zone, "snr": peak_snr, "ml_conf": ml_conf, "chip": chip_b64
             })
 
-    print("[3/5] Running AIS Fusion & Automated Ship-to-Ship (STS) Anomaly Detection...")
+    print("[3/5] Running AIS Fusion, Multi-Pass Dwell Tracking & STS Anomaly Detection...")
+    update_and_score_persistence(ships, pass_raw_id)
+
     known_ais_vessels = [
         {"mmsi": "634102000", "name": "MT MOMBASA STAR (TANKER)", "lat": ships[0]["lat"] + 0.0004, "lon": ships[0]["lon"] - 0.0003} if len(ships) > 0 else {},
         {"mmsi": "477991200", "name": "MV KILINDINI EXPRESS", "lat": ships[1]["lat"] - 0.0003, "lon": ships[1]["lon"] + 0.0004} if len(ships) > 1 else {},
@@ -317,7 +345,6 @@ def run_full_intelligence_engine():
             s["ais_name"] = "TRANSPONDER DARK / UNREGISTERED"
             dark_count += 1
 
-    # Pairwise Distance Check for Ship-to-Ship (STS) Bunkering / Proximity Alerts
     sts_pairs = []
     for i in range(len(ships)):
         nearest_dist = 999999.0
@@ -334,7 +361,6 @@ def run_full_intelligence_engine():
         ships[i]["nearest_m"] = int(round(nearest_dist))
         ships[i]["nearest_id"] = nearest_id
 
-        # Assign Automated Intelligence Threat Tag
         if "DARK" in ships[i]["status"] and nearest_dist <= 380.0:
             ships[i]["threat_level"] = "CRITICAL: DARK STS / PROXIMITY (<380m)"
         elif "DARK" in ships[i]["status"] and ships[i]["zone"] == "OFFSHORE":
@@ -346,26 +372,26 @@ def run_full_intelligence_engine():
 
     with open(CSV_FILE, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["target_id", "status", "ml_confidence_pct", "threat_level", "lat", "lon", "pca_length_m", "pca_beam_m", "aspect_ratio", "heading_deg", "compass", "kinematics", "nearest_vessel_m", "snr_sigma", "zone"])
+        writer.writerow(["target_id", "status", "ml_confidence_pct", "threat_level", "dwell_status", "lat", "lon", "pca_length_m", "pca_beam_m", "aspect_ratio", "heading_deg", "compass", "kinematics", "nearest_vessel_m", "snr_sigma", "zone"])
         for s in ships:
-            writer.writerow([s["id"], s["status"], s["ml_conf"], s["threat_level"], f"{s['lat']:.5f}", f"{s['lon']:.5f}", s["len"], s["beam"], s["aspect"], s["heading"], s["compass"], s["kinematics"], s["nearest_m"], f"{s['snr']:.1f}", s["zone"]])
+            writer.writerow([s["id"], s["status"], s["ml_conf"], s["threat_level"], s["dwell_status"], f"{s['lat']:.5f}", f"{s['lon']:.5f}", s["len"], s["beam"], s["aspect"], s["heading"], s["compass"], s["kinematics"], s["nearest_m"], f"{s['snr']:.1f}", s["zone"]])
 
     print("[4/5] Generating Executive Intelligence Brief (intel_brief.md)...")
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     brief_lines = [
         "# MOMBASA MARITIME DOMAIN AWARENESS — AUTOMATED SAR INTELLIGENCE BRIEF",
-        f"**Generated:** {now_utc} | **Sensor:** Copernicus Sentinel-1D C-Band SAR (VH) | **AI Pipeline:** Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML Classifier\n",
+        f"**Generated:** {now_utc} | **Pass:** `{pass_label}` | **Engine:** Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML Classifier\n",
         "## 1. Executive Summary",
         f"* **Total Radar Contacts Verified:** {len(ships)} vessels ({len(ships)-dark_count} AIS-Compliant, **{dark_count} Dark / Non-Broadcasting Vessels**)",
         f"* **Close-Proximity / Potential Ship-to-Ship (STS) Pairs (<380m):** {len(sts_pairs)} pairs flagged",
         "* **Coverage Zone:** Kilindini Harbour, Kipevu Oil Terminal (KOT2), Mombasa Shipyard, and Western Indian Ocean Approaches\n",
         "## 2. Target Telemetry & Stage-2 AI Confidence Matrix",
-        "| ID | AIS Status | ML Conf | Hull (L x B) | Heading | Kinematics | Nearest Contact | Intelligence Assessment |",
-        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+        "| ID | AIS Status | ML Conf | Hull (L x B) | Heading | Kinematics | Persistence | Nearest Contact | Assessment |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
     ]
     for s in ships:
         brief_lines.append(
-            f"| **{s['id']}** | {s['status']} | **{s['ml_conf']}%** | {s['len']}m x {s['beam']}m | {s['heading']} deg ({s['compass']}) | {s['kinematics']} | {s['nearest_id']} ({s['nearest_m']}m) | {s['threat_level']} |"
+            f"| **{s['id']}** | {s['status']} | **{s['ml_conf']}%** | {s['len']}m x {s['beam']}m | {s['heading']} deg ({s['compass']}) | {s['kinematics']} | {s['dwell_status']} | {s['nearest_id']} ({s['nearest_m']}m) | {s['threat_level']} |"
         )
     with open(BRIEF_FILE, "w") as f:
         f.write("\n".join(brief_lines) + "\n")
@@ -383,7 +409,6 @@ def run_full_intelligence_engine():
         name="Google Satellite + Pier Labels"
     ).add_to(m)
 
-    # Highlight close-proximity STS pairs with a yellow warning link
     for s1, s2, dist_m in sts_pairs:
         folium.PolyLine(
             locations=[[s1["lat"], s1["lon"]], [s2["lat"], s2["lon"]]],
@@ -403,7 +428,7 @@ def run_full_intelligence_engine():
                 <span style="color:{badge_color};">{s['status']}</span>
             </div>
             <div style="font-size:10px; color:#ffd600; margin-top:2px;">{s['threat_level']}</div>
-            <div style="font-size:10px; color:#00e5ff; margin-top:2px;">ML Conf: <b>{s['ml_conf']}%</b> | HDG: {s['heading']} deg {s['compass']} | {s['kinematics']}</div>
+            <div style="font-size:10px; color:#00e5ff; margin-top:2px;">ML: <b>{s['ml_conf']}%</b> | HDG: {s['heading']}° {s['compass']} | {s['dwell_status']}</div>
         </div>
         """
 
@@ -429,10 +454,11 @@ def run_full_intelligence_engine():
         border-radius: 50%; box-shadow: 0 0 8px #00e676;
       }}
     </style>
-    <div style="position:fixed; top:12px; left:55px; z-index:9999; width:365px; background:rgba(10,15,24,0.95); color:#e0e6ed; border:1px solid #1e2d40; border-radius:8px; padding:12px; font-family:monospace; box-shadow:0 8px 24px rgba(0,0,0,0.75);">
+    <div style="position:fixed; top:12px; left:55px; z-index:9999; width:370px; background:rgba(10,15,24,0.95); color:#e0e6ed; border:1px solid #1e2d40; border-radius:8px; padding:12px; font-family:monospace; box-shadow:0 8px 24px rgba(0,0,0,0.75);">
       <div style="border-bottom:1px solid #1e2d40; padding-bottom:8px; margin-bottom:8px;">
         <div style="font-size:14px; font-weight:bold; color:#00e5ff; letter-spacing:1px;">KENYA MDA // AI SAR-AIS FUSION</div>
-        <div style="font-size:11px; color:#8fa0b5;">Engine: CFAR + PCA + Stage-2 ML | <span id="utc_clock" style="color:#00e676;">LIVE</span></div>
+        <div style="font-size:10px; color:#8fa0b5; margin-top:2px;">Pass: <span style="color:#fff;">{pass_label}</span></div>
+        <div style="font-size:10px; color:#8fa0b5;">Engine: CFAR + PCA + ML | <span id="utc_clock" style="color:#00e676;">LIVE</span></div>
       </div>
       <div style="display:flex; gap:6px; margin-bottom:10px; text-align:center;">
         <div style="flex:1; background:#1c1018; border:1px solid #ff1744; border-radius:4px; padding:5px;">
@@ -449,7 +475,7 @@ def run_full_intelligence_engine():
         </div>
       </div>
       <div style="font-size:11px; color:#8fa0b5; margin-bottom:4px;">AI-VERIFIED TARGET QUEUE (CLICK TO LOCK):</div>
-      <div style="max-height:310px; overflow-y:auto; padding-right:4px;">
+      <div style="max-height:300px; overflow-y:auto; padding-right:4px;">
         {sidebar_rows}
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid #1e2d40; display:flex; gap:6px;">
@@ -503,12 +529,13 @@ def run_full_intelligence_engine():
             '<div class="ais-vessel-core"></div>'
         )
         popup_html = f"""
-        <div style="width:240px; font-family:monospace; background:#0b111a; color:#fff; padding:8px; border-radius:6px;">
+        <div style="width:245px; font-family:monospace; background:#0b111a; color:#fff; padding:8px; border-radius:6px;">
           <div style="font-weight:bold; color:{'#ff1744' if is_dark else '#00e676'}; font-size:13px;">{s['status']}</div>
           <div style="font-size:10px; color:#ffd600; margin:2px 0;">{s['threat_level']}</div>
           <div style="font-size:11px; margin:3px 0;"><b>ID:</b> {s['id']} | <b>ML Conf:</b> <span style="color:#00e676;">{s['ml_conf']}%</span></div>
           <div style="font-size:11px; margin:3px 0;"><b>PCA Hull:</b> {s['len']}m x {s['beam']}m (L/B: {s['aspect']})</div>
           <div style="font-size:11px; margin:3px 0; color:#00e5ff;"><b>Heading:</b> {s['heading']} deg ({s['compass']}) | {s['kinematics']}</div>
+          <div style="font-size:11px; margin:3px 0;"><b>Dwell:</b> {s['dwell_status']}</div>
           <div style="font-size:11px; margin:3px 0;"><b>Nearest Contact:</b> {s['nearest_id']} ({s['nearest_m']}m)</div>
           <div style="font-size:11px; margin:3px 0;"><b>AIS:</b> {s['ais_name']}</div>
           <div style="font-size:10px; color:#00e5ff; margin:5px 0 3px 0;">SENTINEL-1 SAR + PCA BOW AXIS:</div>
@@ -518,14 +545,14 @@ def run_full_intelligence_engine():
         folium.Marker(
             location=[s["lat"], s["lon"]],
             icon=folium.DivIcon(html=icon_html, icon_size=(18, 18), icon_anchor=(9, 9)),
-            tooltip=f"{s['id']} | ML: {s['ml_conf']}% | {s['len']}m x {s['beam']}m | {s['threat_level']}",
-            popup=folium.Popup(popup_html, max_width=265)
+            tooltip=f"{s['id']} | ML: {s['ml_conf']}% | {s['len']}m x {s['beam']}m | {s['dwell_status']}",
+            popup=folium.Popup(popup_html, max_width=270)
         ).add_to(m)
 
     folium.LayerControl(position="topright").add_to(m)
     m.save("mombasa_detections.html")
     m.save("index.html")
-    print("DONE: Deployed Stage-2 ML + STS Anomaly Engine to index.html and intel_brief.md")
+    print("DONE: Deployed Stage-2 ML + Dwell Persistence + STS Engine to index.html")
 
 if __name__ == "__main__":
     run_full_intelligence_engine()

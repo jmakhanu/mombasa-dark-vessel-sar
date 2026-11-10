@@ -2,9 +2,8 @@ name: Autonomous Sentinel-1 Mombasa SAR Scan
 
 on:
   schedule:
-    # Runs automatically every 48 hours at 04:00 UTC (07:00 EAT) to catch new orbital passes
     - cron: '0 4 */2 * *'
-  workflow_dispatch: # Allows 1-click manual trigger from the GitHub Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,6 +37,6 @@ jobs:
         run: |
           git config user.name "Mombasa SAR Autonomous Bot"
           git config user.email "actions@github.com"
-          git add index.html mombasa_detections.html sar_detections.csv intel_brief.md dataset/sar_ml_weights.json
+          git add index.html mombasa_detections.html sar_detections.csv intel_brief.md sar_history.json latest_pass_meta.txt dataset/sar_ml_weights.json
           git diff --staged --quiet || git commit -m "Auto-update: Latest Sentinel-1 Mombasa SAR pass & telemetry"
           git push
