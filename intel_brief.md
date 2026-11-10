@@ -1,5 +1,5 @@
 # MOMBASA MARITIME DOMAIN AWARENESS — AUTOMATED SAR INTELLIGENCE BRIEF
-**Generated:** 2026-11-10 18:42 UTC | **Pass:** `S1C VH (2026-11-09 03:03 UTC)` | **Engine:** Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML Classifier
+**Generated:** 2026-11-10 18:52 UTC | **Pass:** `S1C VH (2026-11-09 03:03 UTC)` | **Engine:** Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML Classifier
 
 ## 1. Executive Summary
 * **Total Radar Contacts Verified:** 101 vessels (7 AIS-Compliant, **94 Dark / Non-Broadcasting Vessels**)
