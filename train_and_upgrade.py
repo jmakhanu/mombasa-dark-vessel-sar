@@ -813,6 +813,12 @@ function selectTrack(trackId, fly = false) {{
 
   const statusCol = s.is_dark ? 'var(--red-tac)' : 'var(--green-tac)';
   const rcsChart = buildRcsSvgChart(s.profile, s.is_dark);
+  const icp = computeAutonomousIntercept(s);
+
+  if (interceptLine) { map.removeLayer(interceptLine); }
+  interceptLine = L.polyline([[icp.base.lat, icp.base.lon], [icp.predLat, icp.predLon]], {
+    color: '#00e676', weight: 1.8, dashArray: '6, 6'
+  }).bindTooltip(`AUTONOMOUS INTERCEPT VECTOR: ${icp.base.id} -> ${s.id} (${icp.bearing}° / ${icp.rangeNm} NM)`).addTo(map);
 
   document.getElementById('dossier_content').innerHTML = `
     <div class="chip-frame">
