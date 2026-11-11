@@ -37,6 +37,6 @@ jobs:
         run: |
           git config user.name "Mombasa SAR Autonomous Bot"
           git config user.email "actions@github.com"
-          git add index.html mombasa_detections.html sar_detections.csv intel_brief.md sar_history.json latest_pass_meta.txt dataset/sar_ml_weights.json
+          git add index.html mombasa_detections.html sar_detections.csv mombasa_targets.cot sar_tracks.geojson intel_brief.md sar_history.json latest_pass_meta.txt dataset/sar_ml_weights.json
           git diff --staged --quiet || git commit -m "Auto-update: Latest Sentinel-1 Mombasa SAR pass & telemetry"
           git push

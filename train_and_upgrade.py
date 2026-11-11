@@ -574,9 +574,11 @@ def build_lattice_console():
     <div class="sensor-item"><span>UTC:</span><span id="utc_clock" class="sensor-val" style="color:var(--green-tac);">LIVE</span></div>
   </div>
   <div class="controls-strip">
-    <button class="tac-btn active" id="btn_sar_swath" onclick="toggleSarSwath()">SAR BACKSCATTER SWATH: ON</button>
-    <button class="tac-btn" id="btn_base_mode" onclick="toggleBaseMode()">BASEMAP: DARK TACTICAL</button>
-    <a href="sar_detections.csv" download class="tac-btn" style="text-decoration:none;">EXPORT TRACK CSV</a>
+    <button class="tac-btn active" id="btn_sar_swath" onclick="toggleSarSwath()">SAR SWATH: ON</button>
+    <button class="tac-btn" id="btn_base_mode" onclick="toggleBaseMode()">BASEMAP: DARK</button>
+    <a href="mombasa_targets.cot" download class="tac-btn" style="text-decoration:none; color:#ffb300; border-color:#ffb300;" title="Import into ATAK / WinTAK Military C2">TAK / CoT XML</a>
+    <a href="sar_tracks.geojson" download class="tac-btn" style="text-decoration:none;" title="Load directly into QGIS / ArcGIS">GEOJSON</a>
+    <a href="https://ntfy.sh/aether-sar-mombasa-mda" target="_blank" class="tac-btn" style="text-decoration:none; color:#00e676; border-color:#00e676;" title="Subscribe to free real-time mobile/desktop push alerts">LIVE ALERTS (FREE)</a>
   </div>
 </div>
 
@@ -898,7 +900,73 @@ if (SHIPS.length > 0) {{
         f.write(html)
     with open("index.html", "w") as f:
         f.write(html)
-    print("[5/5] Deployed Anduril-Lattice Style C4ISR Ground Station to index.html")
+
+    # A. Generate Military Standard Cursor-on-Target (CoT) XML Packet for ATAK / WinTAK
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    time_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale_iso = (now_dt + datetime.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cot_events = ['<?xml version="1.0" encoding="UTF-8"?>', '<events>']
+    for s in ships:
+        # MIL-STD-2525 / CoT Type: a-u-S (Unknown/Dark Surface Track) vs a-n-S (Neutral AIS Surface Track)
+        cot_type = "a-u-S-X-M" if s["is_dark"] else "a-n-S-X-M"
+        speed_mps = round(s["knots"] * 0.514444, 2)
+        cot_events.append(
+            f'  <event version="2.0" uid="AETHER-SAR-{s["id"]}" type="{cot_type}" time="{time_iso}" start="{time_iso}" stale="{stale_iso}" how="m-r">'
+            f'<point lat="{s["lat"]}" lon="{s["lon"]}" hae="0.0" ce="15.0" le="9999999.0"/>'
+            f'<detail>'
+            f'<contact callsign="{s["id"]} ({s["len"]}m)"/>'
+            f'<track course="{s["heading"]}" speed="{speed_mps}"/>'
+            f'<remarks>[AETHER-SAR] {s["status"]} | {s["threat"]} | Hull: {s["len"]}m x {s["beam"]}m | ML Conf: {s["ml_conf"]}% | Peak RCS: {s["rcs_db"]} dB | MMSI: {s["mmsi"]}</remarks>'
+            f'</detail>'
+            f'</event>'
+        )
+    cot_events.append('</events>')
+    with open("mombasa_targets.cot", "w") as f:
+        f.write("\n".join(cot_events) + "\n")
+
+    # B. Generate Open-Source GeoJSON for QGIS / Humanitarian / Public MDA Use
+    geojson_features = []
+    for s in ships:
+        geojson_features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [s["lon"], s["lat"]]},
+            "properties": {
+                "id": s["id"], "status": s["status"], "threat": s["threat"],
+                "priority": s["priority"], "length_m": s["len"], "beam_m": s["beam"],
+                "heading_deg": s["heading"], "compass": s["compass"],
+                "kinematics": s["kinematics"], "ml_confidence_pct": s["ml_conf"],
+                "peak_rcs_db": s["rcs_db"], "mmsi": s["mmsi"], "vessel_name": s["vessel_name"]
+            }
+        })
+    with open("sar_tracks.geojson", "w") as f:
+        json.dump({"type": "FeatureCollection", "pass": pass_label, "features": geojson_features}, f, indent=2)
+
+    print("[5/5] Deployed C4ISR Console + Military CoT (mombasa_targets.cot) + QGIS GeoJSON (sar_tracks.geojson)")
+
+    # C. Dispatch 100% Free, Zero-Account Push Notification via ntfy.sh
+    import requests
+    ntfy_topic = os.environ.get("NTFY_TOPIC", "aether-sar-mombasa-mda").strip()
+    dark_list = [f"{s['id']} ({s['len']}mx{s['beam']}m) {s['threat']} HDG {s['heading']} deg" for s in ships if s["is_dark"]]
+    alert_body = (
+        f"Pass: {pass_label}\n"
+        f"Tracks: {len(ships)} Total | {dark_count} EMCON DARK | {len(sts_pairs)} STS Alerts\n"
+        + ("\n".join(dark_list) if dark_list else "All contacts AIS-correlated.")
+    )
+    try:
+        requests.post(
+            f"https://ntfy.sh/{ntfy_topic}",
+            data=alert_body.encode("utf-8"),
+            headers={
+                "Title": f"AETHER-SAR ALERT: {dark_count} Dark Vessels Detected",
+                "Priority": "high" if dark_count > 0 else "default",
+                "Tags": "satellite,rotating_light,ship",
+                "Click": "https://jmakhanu.github.io/mombasa-dark-vessel-sar/"
+            },
+            timeout=12
+        )
+        print(f"      [+] Broadcast live public push alert to https://ntfy.sh/{ntfy_topic}")
+    except Exception as e:
+        print(f"      [!] ntfy push notice skipped: {e}")
 
 if __name__ == "__main__":
     build_lattice_console()

@@ -1,0 +1,131 @@
+{
+  "type": "FeatureCollection",
+  "pass": "S1C // C-BAND SAR IW-VH // 2026-11-09 03:03Z",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          39.62811,
+          -4.05476
+        ]
+      },
+      "properties": {
+        "id": "TRK-01",
+        "status": "DARK // EMCON ACTIVE",
+        "threat": "CRITICAL // DARK STS PROXIMITY",
+        "priority": "P1-FLASH",
+        "length_m": 218,
+        "beam_m": 37,
+        "heading_deg": 255.6,
+        "compass": "WSW",
+        "kinematics": "UNDERWAY",
+        "ml_confidence_pct": 99.7,
+        "peak_rcs_db": 29.3,
+        "mmsi": "NONE (AIS DARK)",
+        "vessel_name": "UNIDENTIFIED SURFACE CONTACT"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          39.61924,
+          -4.05528
+        ]
+      },
+      "properties": {
+        "id": "TRK-02",
+        "status": "DARK // EMCON ACTIVE",
+        "threat": "ELEVATED // UNREGISTERED ANCHORAGE",
+        "priority": "P2-PRIORITY",
+        "length_m": 143,
+        "beam_m": 33,
+        "heading_deg": 17.7,
+        "compass": "NNE",
+        "kinematics": "MOORED / STATIONARY",
+        "ml_confidence_pct": 99.7,
+        "peak_rcs_db": 27.2,
+        "mmsi": "NONE (AIS DARK)",
+        "vessel_name": "UNIDENTIFIED SURFACE CONTACT"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          39.628,
+          -4.04581
+        ]
+      },
+      "properties": {
+        "id": "TRK-03",
+        "status": "AIS CORRELATED",
+        "threat": "NOMINAL // AIS COMPLIANT",
+        "priority": "P4-ROUTINE",
+        "length_m": 110,
+        "beam_m": 40,
+        "heading_deg": 56.5,
+        "compass": "ENE",
+        "kinematics": "UNDERWAY",
+        "ml_confidence_pct": 99.0,
+        "peak_rcs_db": 30.5,
+        "mmsi": "538008411",
+        "vessel_name": "MV EAST AFRICA TRADER"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          39.62984,
+          -4.05388
+        ]
+      },
+      "properties": {
+        "id": "TRK-04",
+        "status": "DARK // EMCON ACTIVE",
+        "threat": "CRITICAL // DARK STS PROXIMITY",
+        "priority": "P1-FLASH",
+        "length_m": 30,
+        "beam_m": 12,
+        "heading_deg": 58.5,
+        "compass": "ENE",
+        "kinematics": "UNDERWAY",
+        "ml_confidence_pct": 94.7,
+        "peak_rcs_db": 29.3,
+        "mmsi": "NONE (AIS DARK)",
+        "vessel_name": "UNIDENTIFIED SURFACE CONTACT"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          39.62656,
+          -4.04622
+        ]
+      },
+      "properties": {
+        "id": "TRK-05",
+        "status": "DARK // EMCON ACTIVE",
+        "threat": "CRITICAL // DARK STS PROXIMITY",
+        "priority": "P1-FLASH",
+        "length_m": 292,
+        "beam_m": 42,
+        "heading_deg": 58.3,
+        "compass": "ENE",
+        "kinematics": "UNDERWAY",
+        "ml_confidence_pct": 96.2,
+        "peak_rcs_db": 30.5,
+        "mmsi": "NONE (AIS DARK)",
+        "vessel_name": "UNIDENTIFIED SURFACE CONTACT"
+      }
+    }
+  ]
+}

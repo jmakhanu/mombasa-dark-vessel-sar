@@ -138,9 +138,11 @@
     <div class="sensor-item"><span>UTC:</span><span id="utc_clock" class="sensor-val" style="color:var(--green-tac);">LIVE</span></div>
   </div>
   <div class="controls-strip">
-    <button class="tac-btn active" id="btn_sar_swath" onclick="toggleSarSwath()">SAR BACKSCATTER SWATH: ON</button>
-    <button class="tac-btn" id="btn_base_mode" onclick="toggleBaseMode()">BASEMAP: DARK TACTICAL</button>
-    <a href="sar_detections.csv" download class="tac-btn" style="text-decoration:none;">EXPORT TRACK CSV</a>
+    <button class="tac-btn active" id="btn_sar_swath" onclick="toggleSarSwath()">SAR SWATH: ON</button>
+    <button class="tac-btn" id="btn_base_mode" onclick="toggleBaseMode()">BASEMAP: DARK</button>
+    <a href="mombasa_targets.cot" download class="tac-btn" style="text-decoration:none; color:#ffb300; border-color:#ffb300;" title="Import into ATAK / WinTAK Military C2">TAK / CoT XML</a>
+    <a href="sar_tracks.geojson" download class="tac-btn" style="text-decoration:none;" title="Load directly into QGIS / ArcGIS">GEOJSON</a>
+    <a href="https://ntfy.sh/aether-sar-mombasa-mda" target="_blank" class="tac-btn" style="text-decoration:none; color:#00e676; border-color:#00e676;" title="Subscribe to free real-time mobile/desktop push alerts">LIVE ALERTS (FREE)</a>
   </div>
 </div>
 

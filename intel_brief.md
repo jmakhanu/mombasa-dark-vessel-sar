@@ -1,5 +1,5 @@
 # AETHER-SAR // WIO MARITIME C4ISR INTELLIGENCE BRIEF
-**Generated:** 2026-11-11 16:18 UTC | **Pass:** `S1C // C-BAND SAR IW-VH // 2026-11-09 03:03Z` | **Architecture:** 2D Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML
+**Generated:** 2026-11-11 16:36 UTC | **Pass:** `S1C // C-BAND SAR IW-VH // 2026-11-09 03:03Z` | **Architecture:** 2D Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML
 
 * **Verified Waterborne Surface Tracks:** 5 (1 AIS Correlated, **4 EMCON Dark Contacts**)
 * **Close-Proximity / STS Alert Pairs:** 2
