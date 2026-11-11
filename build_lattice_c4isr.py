@@ -10,12 +10,14 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.transform import GCPTransformer
-from scipy.ndimage import uniform_filter, maximum_filter, label, zoom
-from matplotlib.path import Path
+from scipy.ndimage import uniform_filter, maximum_filter, label
 
 TIFF_FILE = "mombasa_sar_vh.tiff"
 CSV_FILE = "sar_detections.csv"
 DATASET_CSV = "dataset/metadata.csv"
+MODEL_FILE = "dataset/sar_ml_weights.json"
+HISTORY_FILE = "sar_history.json"
+BRIEF_FILE = "intel_brief.md"
 PASS_META_FILE = "latest_pass_meta.txt"
 
 MIN_LON, MAX_LON = 39.61, 39.95
@@ -23,16 +25,32 @@ MIN_LAT, MAX_LAT = -4.22, -3.96
 COAST_LATS = [-4.30, -4.20, -4.12, -4.095, -4.075, -4.058, -4.00, -3.95, -3.90]
 COAST_LONS = [39.610, 39.638, 39.662, 39.672, 39.680, 39.688, 39.730, 39.762, 39.795]
 
+# Pure-Python Ray-Casting Point-in-Polygon (Zero external dependencies)
+def point_in_poly(lon, lat, poly):
+    inside = False
+    n = len(poly)
+    p1x, p1y = poly[0]
+    for i in range(1, n + 1):
+        p2x, p2y = poly[i % n]
+        if min(p1y, p2y) < lat <= max(p1y, p2y):
+            if lon <= max(p1x, p2x):
+                if p1y != p2y:
+                    xinters = (lat - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                if p1x == p2x or lon <= xinters:
+                    inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
 LAND_EXCLUSION_POLYS = [
-    Path([(39.600, -4.120), (39.668, -4.120), (39.668, -4.076), (39.654, -4.069), (39.638, -4.068), (39.626, -4.057), (39.600, -4.057)]),
-    Path([(39.652, -4.068), (39.680, -4.072), (39.682, -4.038), (39.656, -4.038), (39.648, -4.053)]),
-    Path([(39.650, -4.035), (39.725, -4.035), (39.725, -3.950), (39.650, -3.950)])
+    [(39.600, -4.120), (39.668, -4.120), (39.668, -4.076), (39.654, -4.069), (39.638, -4.068), (39.626, -4.057), (39.600, -4.057)],
+    [(39.652, -4.068), (39.680, -4.072), (39.682, -4.038), (39.656, -4.038), (39.648, -4.053)],
+    [(39.650, -4.035), (39.725, -4.035), (39.725, -3.950), (39.650, -3.950)]
 ]
 
-HARBOUR_WATER_POLY = Path([
+HARBOUR_WATER_POLY = [
     (39.612, -4.056), (39.652, -4.028), (39.685, -4.068),
     (39.674, -4.088), (39.652, -4.068), (39.632, -4.066), (39.612, -4.056)
-])
+]
 
 COMPASS_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 
@@ -48,9 +66,9 @@ def haversine_m(lat1, lon1, lat2, lon2):
 
 def classify_water_zone(lat, lon):
     for poly in LAND_EXCLUSION_POLYS:
-        if poly.contains_point((lon, lat)):
+        if point_in_poly(lon, lat, poly):
             return "LAND"
-    if HARBOUR_WATER_POLY.contains_point((lon, lat)):
+    if point_in_poly(lon, lat, HARBOUR_WATER_POLY):
         return "PORT_APPROACH"
     shoreline_lon = np.interp(lat, COAST_LATS, COAST_LONS)
     if lon > (shoreline_lon + 0.005):
@@ -79,7 +97,6 @@ def array_to_base64_png(rgba):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 def build_georeferenced_sar_overlay(sar_patch, r_min, c_min, transformer):
-    """Projects the raw Sentinel-1 radar backscatter matrix onto a true Lat/Lon grid for map overlay."""
     print("[2/5] Projecting Raw Sentinel-1 C-Band Backscatter Swath to Geodesic Map Grid...")
     win_h, win_w = sar_patch.shape
     out_h, out_w = 520, 620
@@ -105,7 +122,6 @@ def build_georeferenced_sar_overlay(sar_patch, r_min, c_min, transformer):
     norm = np.clip((img - p10) / (p99 - p10 + 1e-5), 0.0, 1.0)
     gamma = np.sqrt(norm)
 
-    # Tactical Cyan/Emerald C4ISR Radar Colormap with transparent low-clutter floor
     rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
     rgba[..., 0] = (gamma ** 3 * 180).astype(np.uint8)
     rgba[..., 1] = (gamma * 235).astype(np.uint8)
@@ -117,7 +133,6 @@ def build_georeferenced_sar_overlay(sar_patch, r_min, c_min, transformer):
     return array_to_base64_png(rgba), bounds
 
 def make_tactical_chip_and_profile(sar_patch, r, c, heading_deg, half_size=30):
-    """Generates both the 60x60 tactical SAR chip and a 1D axial RCS profile array."""
     h, w = sar_patch.shape
     r0, r1 = max(0, int(r) - half_size), min(h, int(r) + half_size)
     c0, c1 = max(0, int(c) - half_size), min(w, int(c) + half_size)
@@ -126,21 +141,18 @@ def make_tactical_chip_and_profile(sar_patch, r, c, heading_deg, half_size=30):
     norm = np.clip((chip - p5) / (p99 - p5 + 1e-5), 0, 1)
 
     rgba = np.zeros((chip.shape[0], chip.shape[1], 4), dtype=np.uint8)
-    # High-contrast phosphor-cyan/amber radar rendering
     rgba[..., 0] = (norm ** 2.2 * 255).astype(np.uint8)
     rgba[..., 1] = (np.sqrt(norm) * 240).astype(np.uint8)
     rgba[..., 2] = (norm * 190).astype(np.uint8)
     rgba[..., 3] = 255
 
     cy, cx = chip.shape[0] // 2, chip.shape[1] // 2
-    # Draw subtle range/azimuth crosshair ticks
     for d in range(4, half_size - 2, 2):
         if 0 <= cy - d < chip.shape[0]: rgba[cy - d, cx] = [0, 90, 110, 255]
         if 0 <= cy + d < chip.shape[0]: rgba[cy + d, cx] = [0, 90, 110, 255]
         if 0 <= cx - d < chip.shape[1]: rgba[cy, cx - d] = [0, 90, 110, 255]
         if 0 <= cx + d < chip.shape[1]: rgba[cy, cx + d] = [0, 90, 110, 255]
 
-    # Draw PCA bow vector in bright cyan
     rad = np.radians(heading_deg)
     vx, vy = np.sin(rad), -np.cos(rad)
     for step in range(9, 26):
@@ -148,7 +160,6 @@ def make_tactical_chip_and_profile(sar_patch, r, c, heading_deg, half_size=30):
         if 0 <= py < chip.shape[0] and 0 <= px < chip.shape[1]:
             rgba[py, px] = [0, 240, 255, 255]
 
-    # Extract 24-point axial Radar Cross-Section (RCS) profile in dB proxy
     profile = []
     for s in np.linspace(-18, 18, 24):
         py = int(np.clip(round(cy + vy * s), 0, chip.shape[0] - 1))
@@ -194,6 +205,8 @@ def train_stage2_classifier():
         err = (1.0 / (1.0 + np.exp(-z))) - y
         w -= 0.15 * ((Xn.T @ err) / len(y) + 0.02 * w)
         b -= 0.15 * float(np.mean(err))
+    with open(MODEL_FILE, "w") as f:
+        json.dump({"mu": mu.tolist(), "sigma": sigma.tolist(), "w": w.tolist(), "b": float(b)}, f, indent=2)
     return mu, sigma, w, b
 
 def score_vessel_ml(chip, aspect_ratio, mu, sigma, w, b):
@@ -395,6 +408,26 @@ def build_lattice_console():
             ships[i]["threat"] = "NOMINAL // AIS COMPLIANT"
             ships[i]["priority"] = "P4-ROUTINE"
 
+    with open(CSV_FILE, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["track_id", "status", "ml_confidence_pct", "threat", "lat", "lon", "length_m", "beam_m", "aspect_ratio", "heading_deg", "compass", "kinematics", "nearest_m", "snr_sigma", "zone"])
+        for s in ships:
+            writer.writerow([s["id"], s["status"], s["ml_conf"], s["threat"], s["lat"], s["lon"], s["len"], s["beam"], s["aspect"], s["heading"], s["compass"], s["kinematics"], s["nearest_m"], s["snr"], s["zone"]])
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    brief_lines = [
+        "# AETHER-SAR // WIO MARITIME C4ISR INTELLIGENCE BRIEF",
+        f"**Generated:** {now_utc} | **Pass:** `{pass_label}` | **Architecture:** 2D Hollow-Ring CFAR + Geodesic PCA + Stage-2 ML\n",
+        f"* **Verified Waterborne Surface Tracks:** {len(ships)} ({len(ships)-dark_count} AIS Correlated, **{dark_count} EMCON Dark Contacts**)",
+        f"* **Close-Proximity / STS Alert Pairs:** {len(sts_pairs)}\n",
+        "| Track ID | Status | ML Conf | Hull (L x B) | Heading | Kinematics | Peak RCS | Assessment |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+    ]
+    for s in ships:
+        brief_lines.append(f"| **{s['id']}** | {s['status']} | **{s['ml_conf']}%** | {s['len']}m x {s['beam']}m | {s['heading']}° ({s['compass']}) | {s['kinematics']} | {s['rcs_db']} dB | {s['threat']} |")
+    with open(BRIEF_FILE, "w") as f:
+        f.write("\n".join(brief_lines) + "\n")
+
     print(f"[4/5] Compiling C4ISR Console HTML ({len(ships)} Tracks | {dark_count} EMCON Dark)...")
 
     ships_json = json.dumps(ships)
@@ -425,12 +458,10 @@ def build_lattice_console():
   body, html {{ width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-deep); font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace; color: var(--text-primary); }}
   #map {{ position: absolute; top: 44px; left: 0; right: 0; bottom: 28px; z-index: 1; background: #03060a; }}
 
-  /* Desaturate & darken satellite imagery for Anduril Lattice tactical look */
   .tactical-sat-tiles {{ filter: brightness(0.62) contrast(1.28) saturate(0.28) hue-rotate(185deg); }}
   .leaflet-container {{ background: #04070b !important; font-family: monospace; }}
   .leaflet-control-attribution {{ background: rgba(5,8,13,0.7) !important; color: #4a5c70 !important; font-size: 9px; }}
 
-  /* Top Orbital Telemetry Bar */
   .top-bar {{
     position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 1000;
     background: linear-gradient(90deg, #060a10 0%, #0b131e 50%, #060a10 100%);
@@ -454,7 +485,6 @@ def build_lattice_console():
   }}
   .tac-btn:hover, .tac-btn.active {{ background: rgba(0, 240, 255, 0.16); border-color: var(--cyan-tac); box-shadow: 0 0 10px rgba(0,240,255,0.25); }}
 
-  /* Left Track Matrix Panel */
   .left-drawer {{
     position: fixed; top: 56px; left: 12px; bottom: 40px; width: 350px; z-index: 900;
     background: var(--bg-panel); border: 1px solid var(--border-tac);
@@ -488,7 +518,6 @@ def build_lattice_console():
   .track-row2 {{ font-size: 10px; color: var(--amber-tac); margin-top: 3px; letter-spacing: 0.4px; }}
   .track-row3 {{ display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 4px; }}
 
-  /* Right Target Dossier & RCS Inspector */
   .right-drawer {{
     position: fixed; top: 56px; right: 12px; bottom: 40px; width: 365px; z-index: 900;
     background: var(--bg-panel); border: 1px solid var(--border-tac);
@@ -512,7 +541,6 @@ def build_lattice_console():
   .tel-k {{ font-size: 9px; color: var(--text-dim); }}
   .tel-v {{ font-size: 12px; font-weight: bold; color: #fff; margin-top: 2px; }}
 
-  /* Bottom Status Bar */
   .bottom-bar {{
     position: fixed; bottom: 0; left: 0; right: 0; height: 28px; z-index: 1000;
     background: #060a10; border-top: 1px solid var(--border-tac);
@@ -520,9 +548,7 @@ def build_lattice_console():
     padding: 0 16px; font-size: 10px; color: var(--text-dim);
   }}
 
-  /* Tactical SVG Reticle Markers */
-  @keyframes spin-slow {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-  @keyframes pulse- lock {{ 0%, 100% {{ transform: scale(1.0); opacity: 0.95; }} 50% {{ transform: scale(1.22); opacity: 0.55; }} }}
+  @keyframes pulse-lock {{ 0%, 100% {{ transform: scale(1.0); opacity: 0.95; }} 50% {{ transform: scale(1.22); opacity: 0.55; }} }}
   .reticle-wrap {{ position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; }}
   .reticle-svg {{ width: 34px; height: 34px; }}
   .reticle-dark .outer-ring {{ animation: pulse-lock 1.5s infinite ease-in-out; transform-origin: center; }}
@@ -536,7 +562,6 @@ def build_lattice_console():
 </head>
 <body>
 
-<!-- TOP C4ISR TELEMETRY BAR -->
 <div class="top-bar">
   <div class="brand-block">
     <div class="brand-dot"></div>
@@ -555,7 +580,6 @@ def build_lattice_console():
   </div>
 </div>
 
-<!-- LEFT TRACK QUEUE MATRIX -->
 <div class="left-drawer">
   <div class="panel-header">
     <span>SURFACE TRACK MATRIX</span>
@@ -582,10 +606,8 @@ def build_lattice_console():
   <div class="track-list" id="track_list_container"></div>
 </div>
 
-<!-- CENTER TACTICAL MAP -->
 <div id="map"></div>
 
-<!-- RIGHT TARGET DOSSIER & RCS INSPECTOR -->
 <div class="right-drawer">
   <div class="panel-header">
     <span>TARGET KINEMATICS & RCS DOSSIER</span>
@@ -594,9 +616,8 @@ def build_lattice_console():
   <div class="dossier-body" id="dossier_content"></div>
 </div>
 
-<!-- BOTTOM TELEMETRY FOOTER -->
 <div class="bottom-bar">
-  <div>CURSOR GEODESIC: <span id="cursor_coords" style="color:var(--cyan-tac); font-weight:bold;">-4.05500° N, 39.66000° E</span></div>
+  <div>CURSOR GEODESIC: <span id="cursor_coords" style="color:var(--cyan-tac); font-weight:bold;">-4.05500° S, 39.66000° E</span></div>
   <div>PIPELINE FOOTPRINT: <span style="color:var(--green-tac);">&lt;150 MB RAM // ZERO-GPU EDGE INFERENCE</span></div>
   <div>STAGE-2 ML CLASSIFIER: <span style="color:var(--cyan-tac);">L2-LOGISTIC 7-FEATURE RADIOMETRIC TENSOR</span></div>
 </div>
@@ -607,14 +628,12 @@ const STS_PAIRS = {sts_json};
 const SAR_OVERLAY_URL = "{sar_overlay_b64}";
 const SAR_BOUNDS = {bounds_json};
 
-// Initialize Map without clutter labels
 const map = L.map('map', {{
   center: [-4.056, 39.662],
   zoom: 13,
   zoomControl: false
 }});
 
-// Clean Esri World Imagery (Zero tourist/shop labels!)
 const darkSatLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
   maxZoom: 18,
   className: 'tactical-sat-tiles',
@@ -626,7 +645,6 @@ const rawSatLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/ser
   attribution: 'ESRI WORLD IMAGERY'
 }});
 
-// Georeferenced Sentinel-1 C-Band SAR Backscatter Swath Overlay
 const sarSwathOverlay = L.imageOverlay(SAR_OVERLAY_URL, SAR_BOUNDS, {{
   opacity: 0.68,
   interactive: false
@@ -678,7 +696,6 @@ setInterval(() => {{
   document.getElementById('utc_clock').innerText = new Date().toISOString().replace('T', ' ').substring(0, 19) + 'Z';
 }}, 1000);
 
-// Draw STS Proximity Alert Links
 STS_PAIRS.forEach(pair => {{
   L.polyline([[pair.lat1, pair.lon1], [pair.lat2, pair.lon2]], {{
     color: '#ffb300', weight: 1.8, dashArray: '4, 6'
@@ -702,7 +719,6 @@ function makeTacticalReticleHTML(s) {{
   `;
 }}
 
-// Render All Surface Contacts & Velocity Vectors
 SHIPS.forEach(s => {{
   const col = s.is_dark ? '#ff2a54' : '#00f0ff';
   const vecLenM = s.kinematics === 'UNDERWAY' ? 320.0 : 150.0;
@@ -871,7 +887,6 @@ function filterTracks(mode) {{
   renderTrackList(mode);
 }}
 
-// Initialize First Track Dossier
 if (SHIPS.length > 0) {{
   selectTrack(SHIPS[0].id, false);
 }}
@@ -883,7 +898,7 @@ if (SHIPS.length > 0) {{
         f.write(html)
     with open("index.html", "w") as f:
         f.write(html)
-    print("[5/5] Deployed Anduril-Lattice Style C4ISR Ground Station to index.html!")
+    print("[5/5] Deployed Anduril-Lattice Style C4ISR Ground Station to index.html")
 
 if __name__ == "__main__":
     build_lattice_console()
